@@ -1,4 +1,4 @@
-﻿#region License Information (GPL v3)
+#region License Information (GPL v3)
 
 /*
     ShareX - A program that allows you to take screenshots and share any file type
@@ -75,6 +75,7 @@ namespace ShareX
             BackColor = SystemColors.ActiveBorder;
             ClientSize = new Size(284, 261);
             FormBorderStyle = FormBorderStyle.None;
+            Opacity = 0.4;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             Text = "ShareX - Actions toolbar";
@@ -296,7 +297,7 @@ namespace ShareX
             ToolStripLabel tslTitle = new ToolStripLabel()
             {
                 Margin = new Padding(4, 0, 3, 0),
-                Text = "ShareX",
+                Text = " ",
                 ToolTipText = Resources.ActionsToolbar_Tip
             };
 
@@ -329,6 +330,7 @@ namespace ShareX
 
                     tsb.Click += async (sender, e) =>
                     {
+                        Hide();
                         if (Program.Settings.ActionsToolbarStayTopMost)
                         {
                             TopMost = false;
@@ -339,6 +341,11 @@ namespace ShareX
                         if (Program.Settings.ActionsToolbarStayTopMost)
                         {
                             TopMost = true;
+                        }
+                        
+                        if (action == HotkeyType.RectangleRegion)
+                        {
+                            Show();
                         }
                     };
 
