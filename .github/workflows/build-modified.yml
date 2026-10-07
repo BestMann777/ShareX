@@ -2,13 +2,6 @@ name: Build ShareX 14.1.0 Modified
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - "**"
-    paths-ignore:
-      - "**/*.md"
-      - "**/*.gitignore"
-      - "**/*.gitattributes"
 
 jobs:
   build:
