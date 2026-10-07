@@ -121,4 +121,3 @@ jobs:
           path: ShareX-14.1.0-modified
           if-no-files-found: error
           retention-days: 14
-```
