@@ -2,11 +2,6 @@ name: Build ShareX 14.1.0 Modified
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch to build"
-        required: true
-        default: "v14.1.0_mod"
 
 jobs:
   build:
