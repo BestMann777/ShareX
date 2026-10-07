@@ -16,11 +16,9 @@ jobs:
   build:
     name: Build
     runs-on: windows-latest
-    environment: release
 
     permissions:
       contents: read
-      id-token: write
 
     strategy:
       fail-fast: false
@@ -57,137 +55,138 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Set PLATFORM & RUNTIME_ID
+        shell: pwsh
         run: |
           $platform = if ("${{ matrix.platform }}" -eq "ARM64") { "arm64" } else { "x64" }
           echo "PLATFORM=$platform" >> $env:GITHUB_ENV
           echo "RUNTIME_ID=win-$platform" >> $env:GITHUB_ENV
 
       - name: Set APP_VERSION
+        shell: pwsh
         run: |
           $content = Get-Content "${{ env.ASSEMBLY_INFO_PATH }}" -Raw
           $pattern = '<Version>([0-9]+(?:\.[0-9]+){1,3})</Version>'
           $match = [regex]::Match($content, $pattern)
+
+          if (-not $match.Success) {
+            throw "Version was not found in ${{ env.ASSEMBLY_INFO_PATH }}"
+          }
+
           $version = $match.Groups[1].Value
+
           if ($env:GITHUB_REF -eq "refs/heads/develop") {
             $version = "$version.$env:GITHUB_RUN_NUMBER"
-            $content = [regex]::Replace($content, $pattern, "<Version>$version</Version>")
-            Set-Content -Path "${{ env.ASSEMBLY_INFO_PATH }}" -Value "$content" -NoNewline
+            $content = [regex]::Replace(
+              $content,
+              $pattern,
+              "<Version>$version</Version>"
+            )
+            Set-Content `
+              -Path "${{ env.ASSEMBLY_INFO_PATH }}" `
+              -Value "$content" `
+              -NoNewline
           }
-          echo $version
+
           echo "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "APP_VERSION=$version"
 
       - name: Create API keys file
         env:
           API_KEYS: ${{ secrets.API_KEYS }}
         if: env.API_KEYS != ''
         working-directory: ${{ env.GITHUB_WORKSPACE }}
+        shell: pwsh
         run: |
           $path = "ShareX.UploadersLib\APIKeys\APIKeysLocal.cs"
-          [System.IO.File]::WriteAllText($path, $env:API_KEYS, [System.Text.UTF8Encoding]::new($false))
+
+          [System.IO.File]::WriteAllText(
+            $path,
+            $env:API_KEYS,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Restore NuGet packages
+        shell: pwsh
         run: |
-          dotnet restore --runtime "${{ env.RUNTIME_ID }}" "${{ env.SOLUTION_FILE_PATH }}"
+          dotnet restore `
+            --runtime "${{ env.RUNTIME_ID }}" `
+            "${{ env.SOLUTION_FILE_PATH }}"
+
           if ("${{ matrix.platform }}" -eq "ARM64") {
             # ShareX.Setup always builds as x64, so restore win-x64 packages too
-            dotnet restore --runtime "win-x64" "ShareX.Setup\ShareX.Setup.csproj"
+            dotnet restore `
+              --runtime "win-x64" `
+              "ShareX.Setup\ShareX.Setup.csproj"
           }
 
       - name: Build
-        run: dotnet build --no-restore --configuration "${{ matrix.configuration }}" -p:Platform="${{ matrix.platform }}" --self-contained true /m "${{ env.SOLUTION_FILE_PATH }}"
+        shell: pwsh
+        run: |
+          dotnet build `
+            --no-restore `
+            --configuration "${{ matrix.configuration }}" `
+            -p:Platform="${{ matrix.platform }}" `
+            --self-contained true `
+            /m `
+            "${{ env.SOLUTION_FILE_PATH }}"
 
       - name: Download FFmpeg
+        shell: pwsh
         run: |
           $archivePath = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
           $extractPath = Join-Path $env:RUNNER_TEMP "ffmpeg"
+
           $downloadUrl = "https://github.com/ShareX/FFmpeg/releases/download/v${{ env.FFMPEG_VERSION }}/ffmpeg-${{ env.FFMPEG_VERSION }}-win-${{ env.PLATFORM }}.zip"
-          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
-          Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force
-          $ffmpegPath = Get-ChildItem -Path $extractPath -Filter "ffmpeg.exe" -Recurse -File | Select-Object -First 1
+
+          Write-Host "Downloading:"
+          Write-Host $downloadUrl
+
+          Invoke-WebRequest `
+            -Uri $downloadUrl `
+            -OutFile $archivePath
+
+          Expand-Archive `
+            -Path $archivePath `
+            -DestinationPath $extractPath `
+            -Force
+
+          $ffmpegPath = Get-ChildItem `
+            -Path $extractPath `
+            -Filter "ffmpeg.exe" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
           if ($null -eq $ffmpegPath) {
             throw "ffmpeg.exe was not found in the downloaded archive."
           }
+
           $destinationPath = "${{ github.workspace }}\ShareX\bin\${{ matrix.configuration }}\${{ env.RUNTIME_ID }}\ffmpeg.exe"
-          Copy-Item -LiteralPath $ffmpegPath.FullName -Destination $destinationPath -Force
 
-      - name: Azure login
-        if: >-
-          (github.ref == 'refs/heads/develop' && matrix.configuration == 'Release') ||
-          (startsWith(github.ref, 'refs/tags/v') &&
-          (matrix.configuration == 'Release' || matrix.configuration == 'Steam' || matrix.configuration == 'MicrosoftStore'))
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Sign ShareX binaries
-        if: >-
-          (github.ref == 'refs/heads/develop' && matrix.configuration == 'Release') ||
-          (startsWith(github.ref, 'refs/tags/v') &&
-          (matrix.configuration == 'Release' || matrix.configuration == 'Steam' || matrix.configuration == 'MicrosoftStore'))
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ vars.CERTIFICATE_PROFILE_NAME }}
-          files-folder: ${{ github.workspace }}\ShareX\bin\${{ matrix.configuration }}\${{ env.RUNTIME_ID }}
-          files-folder-filter: ShareX*.exe,ShareX*.dll,ffmpeg.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign Avalonia binaries
-        if: >-
-          startsWith(github.ref, 'refs/tags/v') &&
-          (matrix.configuration == 'Release' || matrix.configuration == 'Steam' || matrix.configuration == 'MicrosoftStore')
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ vars.CERTIFICATE_PROFILE_NAME }}
-          files-folder: ${{ github.workspace }}\ShareX\bin\${{ matrix.configuration }}\${{ env.RUNTIME_ID }}
-          files-folder-filter: Avalonia*.dll
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign Steam launcher
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.configuration == 'Steam'
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ vars.CERTIFICATE_PROFILE_NAME }}
-          files: ${{ github.workspace }}\ShareX.Steam\bin\Steam\ShareX_Launcher.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+          Copy-Item `
+            -LiteralPath $ffmpegPath.FullName `
+            -Destination $destinationPath `
+            -Force
 
       - name: Build Setup (x64)
         if: matrix.platform == 'ARM64'
+        shell: pwsh
         run: |
-          # Build ShareX.Setup and its dependencies for x64 since it can't run as ARM64 on CI
-          dotnet build --configuration "${{ matrix.configuration }}" -p:Platform="x64" --self-contained true "ShareX.Setup\ShareX.Setup.csproj"
+          # Build ShareX.Setup as x64 because it can't run as ARM64 on CI
+          dotnet build `
+            --configuration "${{ matrix.configuration }}" `
+            -p:Platform="x64" `
+            --self-contained true `
+            "ShareX.Setup\ShareX.Setup.csproj"
 
       - name: Setup
         working-directory: ${{ env.GITHUB_WORKSPACE }}
+        shell: pwsh
         run: |
-          & "ShareX.Setup\bin\${{ matrix.configuration }}\win-x64\ShareX.Setup.exe" -silent -job "${{ matrix.configuration }}" -platform "${{ matrix.platform }}"
-
-      - name: Sign setup
-        if: >-
-          (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')) &&
-          matrix.configuration == 'Release'
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ vars.CERTIFICATE_PROFILE_NAME }}
-          files: ${{ github.workspace }}\Output\ShareX-${{ env.APP_VERSION }}-setup-${{ env.PLATFORM }}.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+          & "ShareX.Setup\bin\${{ matrix.configuration }}\win-x64\ShareX.Setup.exe" `
+            -silent `
+            -job "${{ matrix.configuration }}" `
+            -platform "${{ matrix.platform }}"
 
       - name: Upload artifact (Setup-x64)
         if: matrix.configuration == 'Release' && matrix.platform == 'x64'
@@ -195,6 +194,7 @@ jobs:
         with:
           name: Setup-x64
           path: Output\ShareX-${{ env.APP_VERSION }}-setup-${{ env.PLATFORM }}.exe
+          if-no-files-found: error
 
       - name: Upload artifact (Setup-ARM64)
         if: matrix.configuration == 'Release' && matrix.platform == 'ARM64'
@@ -202,6 +202,7 @@ jobs:
         with:
           name: Setup-ARM64
           path: Output\ShareX-${{ env.APP_VERSION }}-setup-${{ env.PLATFORM }}.exe
+          if-no-files-found: error
 
       - name: Upload artifact (Portable-x64)
         if: matrix.configuration == 'Release' && matrix.platform == 'x64'
@@ -209,6 +210,7 @@ jobs:
         with:
           name: Portable-x64
           path: Output\ShareX-${{ env.APP_VERSION }}-portable-${{ env.PLATFORM }}.zip
+          if-no-files-found: error
 
       - name: Upload artifact (Portable-ARM64)
         if: matrix.configuration == 'Release' && matrix.platform == 'ARM64'
@@ -216,6 +218,7 @@ jobs:
         with:
           name: Portable-ARM64
           path: Output\ShareX-${{ env.APP_VERSION }}-portable-${{ env.PLATFORM }}.zip
+          if-no-files-found: error
 
       - name: Upload artifact (Debug-x64)
         if: matrix.configuration == 'Debug' && matrix.platform == 'x64'
@@ -223,6 +226,7 @@ jobs:
         with:
           name: Debug-x64
           path: Output\ShareX-${{ env.APP_VERSION }}-debug-${{ env.PLATFORM }}.zip
+          if-no-files-found: error
 
       - name: Upload artifact (Debug-ARM64)
         if: matrix.configuration == 'Debug' && matrix.platform == 'ARM64'
@@ -230,6 +234,7 @@ jobs:
         with:
           name: Debug-ARM64
           path: Output\ShareX-${{ env.APP_VERSION }}-debug-${{ env.PLATFORM }}.zip
+          if-no-files-found: error
 
       - name: Upload artifact (Steam-x64)
         if: matrix.configuration == 'Steam' && matrix.platform == 'x64'
@@ -237,13 +242,7 @@ jobs:
         with:
           name: Steam-x64
           path: Output\ShareX-${{ env.APP_VERSION }}-Steam-${{ env.PLATFORM }}.zip
-
-      - name: Upload artifact (Steam-ARM64)
-        if: matrix.configuration == 'Steam' && matrix.platform == 'ARM64'
-        uses: actions/upload-artifact@v7
-        with:
-          name: Steam-ARM64
-          path: Output\ShareX-${{ env.APP_VERSION }}-Steam-${{ env.PLATFORM }}.zip
+          if-no-files-found: error
 
       - name: Upload artifact (MicrosoftStore-x64)
         if: matrix.configuration == 'MicrosoftStore' && matrix.platform == 'x64'
@@ -251,6 +250,7 @@ jobs:
         with:
           name: MicrosoftStore-x64
           path: Output\ShareX-${{ env.APP_VERSION }}-MicrosoftStore-${{ env.PLATFORM }}.appx
+          if-no-files-found: error
 
       - name: Upload artifact (MicrosoftStore-ARM64)
         if: matrix.configuration == 'MicrosoftStore' && matrix.platform == 'ARM64'
@@ -258,6 +258,7 @@ jobs:
         with:
           name: MicrosoftStore-ARM64
           path: Output\ShareX-${{ env.APP_VERSION }}-MicrosoftStore-${{ env.PLATFORM }}.appx
+          if-no-files-found: error
 
       - name: Upload artifact (MicrosoftStoreDebug-x64)
         if: matrix.configuration == 'MicrosoftStoreDebug' && matrix.platform == 'x64'
@@ -265,6 +266,7 @@ jobs:
         with:
           name: MicrosoftStoreDebug-x64
           path: Output\ShareX-${{ env.APP_VERSION }}-MicrosoftStore-debug-${{ env.PLATFORM }}.appx
+          if-no-files-found: error
 
       - name: Upload artifact (MicrosoftStoreDebug-ARM64)
         if: matrix.configuration == 'MicrosoftStoreDebug' && matrix.platform == 'ARM64'
@@ -272,18 +274,20 @@ jobs:
         with:
           name: MicrosoftStoreDebug-ARM64
           path: Output\ShareX-${{ env.APP_VERSION }}-MicrosoftStore-debug-${{ env.PLATFORM }}.appx
+          if-no-files-found: error
 
   release:
     name: Release
     needs: build
+
     if: github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')
+
     runs-on: windows-latest
 
     permissions:
       contents: write
 
     env:
-      REPO_DEV_BUILDS: ${{ github.repository_owner }}/DevBuilds
       RELEASE_BODY_PATH: RELEASE_BODY.md
       APP_VERSION: ${{ needs.build.outputs.APP_VERSION }}
 
@@ -335,13 +339,6 @@ jobs:
           name: Steam-x64
           path: Output
 
-      # - name: Download artifact (Steam-ARM64)
-      #   if: github.ref == 'refs/heads/develop'
-      #   uses: actions/download-artifact@v8
-      #   with:
-      #     name: Steam-ARM64
-      #     path: Output
-
       - name: Download artifact (MicrosoftStore-x64)
         if: github.ref == 'refs/heads/develop'
         uses: actions/download-artifact@v8
@@ -371,27 +368,34 @@ jobs:
           path: Output
 
       - name: Create release body file
+        shell: pwsh
         run: |
-          $checksums = Get-ChildItem -Path "Output\" -Recurse -File
-            | Sort-Object -Property Name
-            | ForEach-Object { "| $($_.Name) | ``$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)`` |" }
-            | Out-String
+          $checksums = Get-ChildItem -Path "Output\" -Recurse -File |
+            Sort-Object -Property Name |
+            ForEach-Object {
+              "| $($_.Name) | ``$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)`` |"
+            } |
+            Out-String
+
           $output = "| File | SHA256 |`r`n| --- | --- |`r`n$($checksums.Trim())"
+
           echo $output >> $env:GITHUB_STEP_SUMMARY
+
           if ($env:GITHUB_REF.StartsWith("refs/tags/v")) {
             $output = "**Changelog:** https://getsharex.com/changelog#$env:GITHUB_REF_NAME`r`n`r`n$output"
           }
-          echo $output
-          Set-Content -Path "${{ env.RELEASE_BODY_PATH }}" -Value "$output" -NoNewline
+
+          Set-Content `
+            -Path "${{ env.RELEASE_BODY_PATH }}" `
+            -Value "$output" `
+            -NoNewline
 
       - name: Release (Dev)
-        env:
-          CUSTOM_GITHUB_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
-        if: env.CUSTOM_GITHUB_TOKEN != '' && env.REPO_DEV_BUILDS != '' && github.ref == 'refs/heads/develop'
+        if: github.ref == 'refs/heads/develop'
         uses: softprops/action-gh-release@v3
         with:
-          repository: ${{ env.REPO_DEV_BUILDS }}
-          token: ${{ env.CUSTOM_GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          token: ${{ github.token }}
           tag_name: v${{ env.APP_VERSION }}
           name: ShareX ${{ env.APP_VERSION }} Dev
           body_path: ${{ env.RELEASE_BODY_PATH }}
@@ -399,13 +403,12 @@ jobs:
           prerelease: false
           files: |
             Output/ShareX-${{ env.APP_VERSION }}-setup-x64.exe
-            # Output/ShareX-${{ env.APP_VERSION }}-setup-arm64.exe
+            Output/ShareX-${{ env.APP_VERSION }}-setup-arm64.exe
             Output/ShareX-${{ env.APP_VERSION }}-portable-x64.zip
-            # Output/ShareX-${{ env.APP_VERSION }}-portable-arm64.zip
+            Output/ShareX-${{ env.APP_VERSION }}-portable-arm64.zip
             Output/ShareX-${{ env.APP_VERSION }}-debug-x64.zip
             Output/ShareX-${{ env.APP_VERSION }}-debug-arm64.zip
             Output/ShareX-${{ env.APP_VERSION }}-Steam-x64.zip
-            # Output/ShareX-${{ env.APP_VERSION }}-Steam-arm64.zip
             Output/ShareX-${{ env.APP_VERSION }}-MicrosoftStore-x64.appx
             Output/ShareX-${{ env.APP_VERSION }}-MicrosoftStore-arm64.appx
             Output/ShareX-${{ env.APP_VERSION }}-MicrosoftStore-debug-x64.appx
@@ -424,6 +427,6 @@ jobs:
           prerelease: true
           files: |
             Output/ShareX-${{ env.APP_VERSION }}-setup-x64.exe
-            # Output/ShareX-${{ env.APP_VERSION }}-setup-arm64.exe
+            Output/ShareX-${{ env.APP_VERSION }}-setup-arm64.exe
             Output/ShareX-${{ env.APP_VERSION }}-portable-x64.zip
-            # Output/ShareX-${{ env.APP_VERSION }}-portable-arm64.zip
+            Output/ShareX-${{ env.APP_VERSION }}-portable-arm64.zip
